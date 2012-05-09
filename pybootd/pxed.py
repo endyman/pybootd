@@ -388,52 +388,19 @@ class BootpServer:
         if self.access:
             # remote access is always validated on each request
             if self.access in self.ACCESS_REMOTE:
-                # need to query a host to grant or reject access
-                import urlparse
-                import urllib
-                netloc = self.config.get(self.access, 'location')
-                path = self.config.get(self.access, pxe and 'pxe' or 'dhcp')
-                timeout = int(self.config.get(self.access, 'timeout', '5'))
-                parameters = {'mac' : mac_str}
-                if uuid:
-                    parameters['uuid'] = uuid_str
-                if not pxe and mac_str in self.ippool:
-                    parameters['ip'] = self.ippool[mac_str]
-                item = uuid_str or mac_str
-                # only bother the authentication host when a state change is
-                # required.
-                if currentstate != newstate:
-                    query = urllib.urlencode(parameters)
-                    urlparts = (self.access, netloc, path, query, '')
-                    url = urlparse.urlunsplit(urlparts)
-                    self.log.info('Requesting URL: %s' % url)
-                    import urllib2
-                    import httplib
-                    try:
-                        up = urllib2.urlopen(url, timeout=timeout)
-                        for l in up:
-                            try:
-                                # Look for extra definition within the reply
-                                k, v = [x.strip() for x in l.split(':')]
-                                k = k.lower()
-                                if k == 'client':
-                                    hostname = v
-                                if k == 'file':
-                                    filename = v
-                            except ValueError:
-                                pass
-                    except urllib2.HTTPError, e:
-                        self.log.error('HTTP Error: %s' % str(e))
-                        self.states[mac_str] = self.ST_IDLE
-                        return
-                    except urllib2.URLError, e:
-                        self.log.critical('Internal error: %s' % str(e))
-                        self.states[mac_str] = self.ST_IDLE
-                        return
-                    except httplib.HTTPException, e:
-                        self.log.error('Server error: %s' % type(e))
-                        self.states[mac_str] = self.ST_IDLE
-                        return
+                import drest
+                
+                api = drest.api.TastyPieAPI(self.config.get(self.access, 'apiurl'))
+                api.auth(self.config.get(self.access, 'apiuser'), self.config.get(self.access, 'apikey'))
+                api_mac_str = mac_str.replace('-', ':')
+                try:
+                    query = api.systems.get(api_mac_str)
+                except drest.exc.dRestRequestError, e:
+                    if e.response.status == 404:
+                        new_record = {'mac_address': api_mac_str}
+                        post = api.systems.post(new_record)
+                        self.log.info('Added new System with MAC: %s' % api_mac_str)
+                    
             # local access is only validated if mac address is not yet known
             elif mac_str not in self.ippool:
                 item = locals()['%s_str' % self.access]
@@ -451,8 +418,9 @@ class BootpServer:
                     return
             else:
                 item = locals()['%s_str' % self.access]
-            self.log.info('%s access is authorized, '
+                self.log.info('%s access is authorized, '
                           'request will be satisfied' % item)
+
         # construct reply
         buf[BOOTP_OP] = BOOTREPLY
         self.log.info('Client IP: %s' % socket.inet_ntoa(buf[7]))
